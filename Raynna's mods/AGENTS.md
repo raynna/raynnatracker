@@ -194,3 +194,16 @@ Current baseline in Theme.lua (retain it unless deliberately changing the theme)
   Never claim in-game testing when only mocked or static checks were performed.
 - Keep this guide and DEVELOPMENT.md aligned with intentional convention changes;
   distinguish future design requirements from infrastructure already implemented.
+
+
+## Standalone Bestiary distribution
+
+`RaynnaBestiary` is now a separate installable addon using `RaynnaBestiaryDB`.
+Tracker 1.18.0 keeps embedded Bestiary as a compatibility fallback, but delegates
+when the optional standalone package is enabled. Do not initialize both hover UIs.
+The standalone settings page registers `bestiary` in the existing shared registry.
+Migrate only Bestiary preferences, appearance and recent portrait IDs from older
+Tracker saves, by deep copy; never replace existing standalone settings or copy
+kill history into Bestiary. Keep copied theme/reference modules synchronized.
+Player ZIPs are built by `tools/package_release.py`; generators stay in source
+repositories, while runtime data, art and license notices stay in the ZIP.

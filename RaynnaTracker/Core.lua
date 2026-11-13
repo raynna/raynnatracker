@@ -507,7 +507,11 @@ eventFrame:SetScript('OnEvent', function(_, event, ...)
         Addon.Observe('target')
         Addon.PreloadTrackerPortraits()
         Addon.BuildUI()
-        if Addon.BuildBestiary then
+        if RaynnaBestiaryAPI then
+            Addon.BestiaryDemo = function()
+                RaynnaBestiaryAPI.BestiaryDemo()
+            end
+        elseif Addon.BuildBestiary then
             Addon.BuildBestiary()
         end
         if Addon.BuildSettings then

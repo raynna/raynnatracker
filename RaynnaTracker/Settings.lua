@@ -82,72 +82,78 @@ function Addon.BuildSettings()
         Addon.db.appearance[key] = value
         Addon.ApplyAppearance()
     end)
-    RaynnaModsSettingsRegistry:Register('foreverhunt', 'Tracker & Bestiary', function(host)
-        panel = host
-        label("Raynna's mods", 24, -20, true)
-        label('Changes apply immediately and are saved for this character.', 24, -48)
-        label("Raynna's Tracker", 24, -83, true)
-        checkbox('Show tracker', 24, -108, function()
-            return not Addon.db.hidden
-        end, function(value)
-            SlashCmdList.FOREVERHUNT(value and 'show' or 'hide')
-        end)
-        checkbox('Minimize tracker', 280, -108, function()
-            return Addon.db.collapsed
-        end, Addon.SetCollapsed)
-        checkbox('Show minimap button', 24, -138, function()
-            return not Addon.db.hideMinimap
-        end, Addon.SetMinimapVisible)
-        percentage('Tracker scale', -174, function()
-            return Addon.db.scale
-        end, function(value)
-            Addon.SetTrackerScale(value / 100)
-        end, 40, 180)
-        button('Center and show', 365, -174, function()
-            SlashCmdList.FOREVERHUNT('center')
-        end)
-        label('Reopen any time: /rt show   |   Settings: /rt settings', 24, -210)
+    RaynnaModsSettingsRegistry:Register(
+        'foreverhunt',
+        RaynnaBestiaryAPI and 'Tracker' or 'Tracker & Bestiary',
+        function(host)
+            panel = host
+            label("Raynna's mods", 24, -20, true)
+            label('Changes apply immediately and are saved for this character.', 24, -48)
+            label("Raynna's Tracker", 24, -83, true)
+            checkbox('Show tracker', 24, -108, function()
+                return not Addon.db.hidden
+            end, function(value)
+                SlashCmdList.FOREVERHUNT(value and 'show' or 'hide')
+            end)
+            checkbox('Minimize tracker', 280, -108, function()
+                return Addon.db.collapsed
+            end, Addon.SetCollapsed)
+            checkbox('Show minimap button', 24, -138, function()
+                return not Addon.db.hideMinimap
+            end, Addon.SetMinimapVisible)
+            percentage('Tracker scale', -174, function()
+                return Addon.db.scale
+            end, function(value)
+                Addon.SetTrackerScale(value / 100)
+            end, 40, 180)
+            button('Center and show', 365, -174, function()
+                SlashCmdList.FOREVERHUNT('center')
+            end)
+            label('Reopen any time: /rt show   |   Settings: /rt settings', 24, -210)
 
-        label("Raynna's Bestiary", 24, -248, true)
-        checkbox('Alt-hover monsters', 24, -274, function()
-            return Addon.db.bestiary.npcHover ~= false
-        end, function(value)
-            Addon.db.bestiary.npcHover = value
-        end)
-        checkbox('Alt-hover inventory items', 280, -274, function()
-            return Addon.db.bestiary.itemHover ~= false
-        end, function(value)
-            Addon.db.bestiary.itemHover = value
-        end)
-        percentage('Bestiary scale', -310, function()
-            return Addon.db.bestiary.scale or 1
-        end, function(value)
-            Addon.SetBestiaryScale(value / 100)
-        end, 40, 180)
-        button('Open bestiary', 365, -310, function()
-            SlashCmdList.RAYNNABESTIARY('')
-        end)
-
-        label('Appearance - all installed Raynna addons', 24, -365, true)
-        checkbox('Parchment background texture', 24, -392, function()
-            return Addon.db.appearance.paper ~= false
-        end, function(value)
-            RaynnaModsSettingsRegistry:SetAppearance('paper', value)
-        end)
-        percentage('Background opacity', -430, function()
-            return Addon.db.appearance.opacity or 0.97
-        end, function(value)
-            RaynnaModsSettingsRegistry:SetAppearance('opacity', value / 100)
-        end, 20, 100)
-        panel:SetScript('OnShow', function()
-            for _, refresh in ipairs(refreshers) do
-                refresh()
+            if not RaynnaBestiaryAPI then
+                label("Raynna's Bestiary", 24, -248, true)
+                checkbox('Alt-hover monsters', 24, -274, function()
+                    return Addon.db.bestiary.npcHover ~= false
+                end, function(value)
+                    Addon.db.bestiary.npcHover = value
+                end)
+                checkbox('Alt-hover inventory items', 280, -274, function()
+                    return Addon.db.bestiary.itemHover ~= false
+                end, function(value)
+                    Addon.db.bestiary.itemHover = value
+                end)
+                percentage('Bestiary scale', -310, function()
+                    return Addon.db.bestiary.scale or 1
+                end, function(value)
+                    Addon.SetBestiaryScale(value / 100)
+                end, 40, 180)
+                button('Open bestiary', 365, -310, function()
+                    SlashCmdList.RAYNNABESTIARY('')
+                end)
             end
-        end)
-        return function()
-            for _, refresh in ipairs(refreshers) do
-                refresh()
+
+            label('Appearance - all installed Raynna addons', 24, -365, true)
+            checkbox('Parchment background texture', 24, -392, function()
+                return Addon.db.appearance.paper ~= false
+            end, function(value)
+                RaynnaModsSettingsRegistry:SetAppearance('paper', value)
+            end)
+            percentage('Background opacity', -430, function()
+                return Addon.db.appearance.opacity or 0.97
+            end, function(value)
+                RaynnaModsSettingsRegistry:SetAppearance('opacity', value / 100)
+            end, 20, 100)
+            panel:SetScript('OnShow', function()
+                for _, refresh in ipairs(refreshers) do
+                    refresh()
+                end
+            end)
+            return function()
+                for _, refresh in ipairs(refreshers) do
+                    refresh()
+                end
             end
         end
-    end)
+    )
 end

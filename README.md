@@ -1,6 +1,6 @@
 # Raynna's Tracker and Bestiary
 
-Standalone WoW Forever addon (Interface 16001). Install both folders from `RaynnaTracker-1.17.0.zip`. `RaynnaTracker` contains Tracker and Bestiary; the tiny `ForeverHunt` compatibility package only loads old saves for automatic migration. No Questie, QuestieDB or GearQuest is required. Restart WoW after upgrading from the old folder name.
+Standalone WoW Forever addon (Interface 16001). Install both folders from `RaynnaTracker-1.18.0-CurseForge.zip`. `RaynnaTracker` contains Tracker and Bestiary; the tiny `ForeverHunt` compatibility package only loads old saves for automatic migration. No Questie, QuestieDB or GearQuest is required. Restart WoW after upgrading from the old folder name.
 
 New saves use `RaynnaTrackerDB` in `RaynnaTracker.lua`. On first load, existing `ForeverHuntDB` data is copied only if the new database does not exist. Old saved-variable files are left intact. Keep the legacy data loader enabled so every character can migrate when it next logs in.
 
@@ -56,3 +56,6 @@ or the adjacent minus/plus buttons. Changes apply immediately and save per
 character. `/rt show` reopens a closed tracker; `/rt` toggles it. Closing the
 tracker does not stop collection. The page currently covers Tracker and Bestiary.
 
+
+
+Standalone Bestiary: Tracker 1.18.0 detects RaynnaBestiary when installed and uses its panel and settings, avoiding duplicate hover hooks. Without it, the embedded Bestiary remains available.

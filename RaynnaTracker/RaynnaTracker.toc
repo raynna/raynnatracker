@@ -2,9 +2,9 @@
 ## Title: Raynna's Tracker
 ## Notes: Compact kill, collected loot, and money tracker.
 ## Author: Andreas
-## Version: 1.17.1
+## Version: 1.18.0
 ## Dependencies: ForeverHunt
-## OptionalDeps: QuestieDB
+## OptionalDeps: QuestieDB, RaynnaBestiary
 ## SavedVariablesPerCharacter: RaynnaTrackerDB
 SettingsRegistry.lua
 Core.lua
@@ -22,6 +22,3 @@ Portraits.lua
 Bestiary.lua
 UI.lua
 Settings.lua
-
-
-
