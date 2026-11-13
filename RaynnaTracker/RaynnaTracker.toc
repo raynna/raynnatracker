@@ -1,0 +1,27 @@
+## Interface: 16001
+## Title: Raynna's Tracker
+## Notes: Compact kill, collected loot, and money tracker.
+## Author: Andreas
+## Version: 1.17.1
+## Dependencies: ForeverHunt
+## OptionalDeps: QuestieDB
+## SavedVariablesPerCharacter: RaynnaTrackerDB
+SettingsRegistry.lua
+Core.lua
+Theme.lua
+Widgets.lua
+Demo.lua
+Drops.lua
+LootReference.lua
+Metadata.lua
+MetadataQueries.lua
+ForeverReference.lua
+LootSources.lua
+PortraitDisplays.lua
+Portraits.lua
+Bestiary.lua
+UI.lua
+Settings.lua
+
+
+

@@ -1,0 +1,5 @@
+## Interface: 16001
+## Title: Raynna's Tracker - Legacy data
+## Notes: Loads existing ForeverHunt saves for automatic migration. Contains no tracker UI.
+## Version: 1.15.0
+## SavedVariablesPerCharacter: ForeverHuntDB
