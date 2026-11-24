@@ -7,6 +7,62 @@ local contentRegions, resizeHandles = {}, {}
 local visibleRows = 7
 local expandedWidth, expandedHeight = 300, 424
 local titleColor = Addon.Theme.gold
+local lastHoveredMonster
+
+-- Launch real reference data, never the fixed preview creature.
+function Addon.OpenTrackedBestiary()
+    local api = RaynnaBestiaryAPI
+    if api and api.OpenBrowser then
+        Addon.HideDrops(true)
+        api.OpenBrowser(Addon.DisplayData().mobs)
+        return
+    end
+    if not api or not api.ShowBestiary or not api.ReferenceMonster then
+        print("|cff66ddbbRaynna's Tracker:|r Install and enable Raynna's Bestiary to use this button.")
+        return
+    end
+    local guid = UnitGUID('target')
+    local readable = not issecretvalue or not issecretvalue(guid)
+    local id = readable
+        and type(guid) == 'string'
+        and tonumber(guid:match('^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-'))
+    local name, level
+    if id then
+        name, level = UnitName('target'), UnitLevel('target')
+        if issecretvalue and issecretvalue(name) then
+            name = nil
+        end
+        if issecretvalue and issecretvalue(level) then
+            level = nil
+        end
+        if type(level) ~= 'number' or level <= 0 then
+            level = nil
+        end
+    else
+        local monster = lastHoveredMonster
+        if not monster then
+            for _, row in ipairs(monsterRows) do
+                if row.mob then
+                    monster = row.mob
+                    break
+                end
+            end
+        end
+        if monster then
+            id = Addon.TrackerPortraitID(monster)
+            name = monster.name
+            level = monster.minLevel
+        end
+    end
+    if not id then
+        print(
+            "|cff66ddbbRaynna's Tracker:|r Target a monster or hover a tracked monster, then click Bestiary."
+        )
+        return
+    end
+    Addon.HideDrops(true)
+    api.ShowBestiary(api.ReferenceMonster(id, name, level), false, true)
+end
 
 -- Text and control construction
 local function moneyText(amount)
@@ -100,7 +156,13 @@ function Addon.Layout()
     local questHeight = 36
     trackerFrame.questSummary:Show()
     trackerFrame.questSummary:SetWidth(width - 24)
-    visibleRows = math.max(1, math.min(#monsterRows, math.floor((height - 214 - questHeight) / 30)))
+    local statsHeight = (Addon.db.hideXPRate and 0 or 18) + (Addon.db.hideXPToLevel and 0 or 18)
+    trackerFrame.rateLabel:SetShown(not Addon.db.hideXPRate)
+    trackerFrame.rate:SetShown(not Addon.db.hideXPRate)
+    trackerFrame.toLevelLabel:SetShown(not Addon.db.hideXPToLevel)
+    trackerFrame.toLevel:SetShown(not Addon.db.hideXPToLevel)
+    visibleRows =
+        math.max(1, math.min(#monsterRows, math.floor((height - 214 - questHeight - statsHeight) / 30)))
     trackerFrame.title:SetWidth(width - 70)
     positionRegion(trackerFrame.minus, width - 57, -6)
     positionRegion(trackerFrame.close, width - 33, -6)
@@ -116,11 +178,19 @@ function Addon.Layout()
         positionRegion(row.count, width - 79, -4)
         positionRegion(row.xp, math.max(155, width - 145), -18)
     end
-    positionRegion(trackerFrame.page, 12, -(height - 137))
-    positionRegion(trackerFrame.moneyLabel, 12, -(height - 112))
-    positionRegion(trackerFrame.money, 116, -(height - 113))
-    positionRegion(trackerFrame.xpLabel, 12, -(height - 89))
-    positionRegion(trackerFrame.xp, 116, -(height - 90))
+    positionRegion(trackerFrame.page, 12, -(height - 137 - statsHeight))
+    positionRegion(trackerFrame.moneyLabel, 12, -(height - 112 - statsHeight))
+    positionRegion(trackerFrame.money, 116, -(height - 113 - statsHeight))
+    positionRegion(trackerFrame.xpLabel, 12, -(height - 89 - statsHeight))
+    positionRegion(trackerFrame.xp, 116, -(height - 90 - statsHeight))
+    local statY = -(height - 90 - statsHeight) - 18
+    positionRegion(trackerFrame.rateLabel, 12, statY)
+    positionRegion(trackerFrame.rate, 116, statY)
+    if not Addon.db.hideXPRate then
+        statY = statY - 18
+    end
+    positionRegion(trackerFrame.toLevelLabel, 12, statY)
+    positionRegion(trackerFrame.toLevel, 116, statY)
     positionRegion(trackerFrame.scaleLabel, 12, -(height - 59))
     positionRegion(trackerFrame.scaleDown, 108, -(height - 64))
     positionRegion(trackerFrame.scaleInput, 141, -(height - 64))
@@ -133,13 +203,14 @@ function Addon.Layout()
     end
 end
 function Addon.SetCollapsed(collapsed)
-    -- A center/bottom anchor shifts the title when the frame height changes.
-    -- Preserve its current top-left point before changing the dimensions.
+    -- Expansion can be clamped upward by the screen edge. Keep the compact
+    -- position separately so that automatic movement never becomes its home.
     local left, top = trackerFrame:GetLeft(), trackerFrame:GetTop()
-    if left and top then
-        trackerFrame:ClearAllPoints()
-        trackerFrame:SetPoint('TOPLEFT', UIParent, 'BOTTOMLEFT', left, top)
-        Addon.db.position = { point = 'TOPLEFT', relative = 'BOTTOMLEFT', x = left, y = top }
+    local position = left and top and { point = 'TOPLEFT', relative = 'BOTTOMLEFT', x = left, y = top }
+    if Addon.db.collapsed and not collapsed then
+        Addon.db.compactReturnPosition = position
+    elseif collapsed and not Addon.db.collapsed then
+        position = Addon.db.compactReturnPosition or position
     end
     Addon.db.collapsed = collapsed
     trackerFrame:SetSize(collapsed and 205 or expandedWidth, collapsed and 72 or expandedHeight)
@@ -164,14 +235,81 @@ function Addon.SetCollapsed(collapsed)
     end
     Addon.Layout()
     Addon.Draw()
+    -- Restore after resizing: anchoring while still expanded would clamp again.
+    if position then
+        trackerFrame:ClearAllPoints()
+        trackerFrame:SetPoint(position.point, UIParent, position.relative, position.x, position.y)
+        Addon.db.position = position
+    end
 end
 
 -- Refresh visible records and summary values
+local function layoutCompactStats()
+    trackerFrame.compactRate:SetShown(Addon.db.collapsed and not Addon.db.hideXPRate)
+    trackerFrame.compactLevelTime:SetShown(Addon.db.collapsed and not Addon.db.hideXPToLevel)
+    if not Addon.db.collapsed then
+        return
+    end
+    local y = -63
+    if not Addon.db.hideXPRate then
+        positionRegion(trackerFrame.compactRate, 6, y)
+        y = y - 18
+    end
+    if not Addon.db.hideXPToLevel then
+        positionRegion(trackerFrame.compactLevelTime, 6, y)
+        y = y - 18
+    end
+    local plusX = 12 + (trackerFrame.titleLabel:GetStringWidth() or 130) + 6
+    local width = math.max(
+        plusX + 31,
+        (trackerFrame.compactMoney:GetStringWidth() or 0) + 24,
+        (trackerFrame.compactXP:GetStringWidth() or 0) + 24,
+        not Addon.db.hideXPRate and (trackerFrame.compactRate:GetStringWidth() or 0) + 24 or 0,
+        not Addon.db.hideXPToLevel and (trackerFrame.compactLevelTime:GetStringWidth() or 0) + 24 or 0
+    )
+    trackerFrame:SetSize(width, -y + 9)
+    trackerFrame.title:SetWidth(plusX - 6)
+    positionRegion(trackerFrame.plus, plusX, -6)
+end
+
+local statsElapsed = 0
+local function statsTick(_, elapsed)
+    statsElapsed = statsElapsed + elapsed
+    if statsElapsed >= 1 then
+        statsElapsed = 0
+        Addon.UpdateXPDetails()
+    end
+end
+function Addon.UpdateXPDetails()
+    local rate, state, active = Addon.XPRate()
+    trackerFrame.rate:SetText(rate and Addon.Number(rate) or state)
+    local remaining, levelState = Addon.XPToLevel()
+    trackerFrame.toLevel:SetText(remaining and Addon.Number(remaining) or levelState)
+    trackerFrame.compactRate:SetText('Kill XP / hour: ' .. (rate and Addon.Number(rate) or state))
+    local estimate = levelState or state or 'Waiting for kills'
+    if remaining and rate and rate > 0 then
+        local minutes = math.ceil(remaining * 60 / rate)
+        estimate = minutes >= 60 and (math.floor(minutes / 60) .. 'h ' .. minutes % 60 .. 'm')
+            or (minutes .. 'm')
+        estimate = '~' .. estimate
+    end
+    trackerFrame.compactLevelTime:SetText('Time to level: ' .. estimate)
+    layoutCompactStats()
+    trackerFrame:SetScript(
+        'OnUpdate',
+        active
+                and (not Addon.db.hideXPRate or (Addon.db.collapsed and not Addon.db.hideXPToLevel))
+                and statsTick
+            or nil
+    )
+end
+
 function Addon.Draw()
     if not trackerFrame then
         return
     end
     local data = Addon.DisplayData()
+    Addon.UpdateXPDetails()
     Addon.Layout()
     local quests = data.quests or { count = 0, xp = 0 }
     trackerFrame.questSummary.count:SetText('Quests completed: ' .. Addon.Number(quests.count))
@@ -205,25 +343,15 @@ function Addon.Draw()
             .. #sortedMonsters
             .. ' monster types'
     )
-    trackerFrame.money:SetText(moneyText(data.money))
+    trackerFrame.money:SetText(moneyText(Addon.TotalMoney(data)))
     trackerFrame.xp:SetText(Addon.Number(Addon.TrackerXP(data)))
     trackerFrame.compactMoney:SetText(
-        (Addon.demo and 'Demo money: ' or 'Money gained: ') .. moneyText(data.money)
+        (Addon.demo and 'Demo money: ' or 'Money gained: ') .. moneyText(Addon.TotalMoney(data))
     )
     trackerFrame.compactXP:SetText(
         (Addon.demo and 'Demo XP: ' or 'XP gained: ') .. Addon.Number(Addon.TrackerXP(data))
     )
-    if Addon.db.collapsed then
-        local plusX = 12 + (trackerFrame.titleLabel:GetStringWidth() or 130) + 6
-        local width = math.max(
-            plusX + 23 + 8,
-            (trackerFrame.compactMoney:GetStringWidth() or 0) + 24,
-            (trackerFrame.compactXP:GetStringWidth() or 0) + 24
-        )
-        trackerFrame:SetWidth(width)
-        trackerFrame.title:SetWidth(plusX - 6)
-        positionRegion(trackerFrame.plus, plusX, -6)
-    end
+    layoutCompactStats()
     trackerFrame.empty:SetShown(#sortedMonsters == 0 and not Addon.db.collapsed)
     trackerFrame.page:SetText(
         #sortedMonsters > visibleRows
@@ -239,7 +367,7 @@ function Addon.Draw()
             row.name:SetText(row.mob.name)
             row.level:SetText(Addon.LevelText(row.mob))
             row.count:SetText(Addon.Number(row.mob.count))
-            row.money:SetText(moneyText(row.mob.money or 0))
+            row.money:SetText(moneyText(Addon.TotalMoney(row.mob)))
             row.xp:SetText(Addon.Number(row.mob.xp) .. ' XP')
         end
     end
@@ -250,9 +378,12 @@ end
 -- Construct the tracker window and wire controls
 function Addon.BuildUI()
     expandedWidth = math.max(300, math.min(800, Addon.db.width or expandedWidth))
-    expandedHeight = math.max(304, math.min(900, Addon.db.height or expandedHeight))
+    expandedHeight = math.max(340, math.min(900, Addon.db.height or expandedHeight))
     trackerFrame = CreateFrame('Frame', 'ForeverHuntFrame', UIParent, 'BackdropTemplate')
-    trackerFrame:SetSize(expandedWidth, expandedHeight)
+    trackerFrame:SetSize(
+        Addon.db.collapsed and 205 or expandedWidth,
+        Addon.db.collapsed and 72 or expandedHeight
+    )
     trackerFrame:SetScale(Addon.db.scale)
     trackerFrame:SetClampedToScreen(true)
     trackerFrame:SetMovable(true)
@@ -297,6 +428,8 @@ function Addon.BuildUI()
     trackerFrame.compactMoney = createText(title, 11, 6, -27)
     trackerFrame.compactXP = createText(title, 11, 6, -45)
     trackerFrame.compactXP:SetTextColor(0.55, 0.75, 1)
+    trackerFrame.compactRate = createText(title, 11, 6, -63)
+    trackerFrame.compactLevelTime = createText(title, 11, 6, -81)
     trackerFrame.minus = button(trackerFrame, '-', 23, 243, -8, function()
         Addon.SetCollapsed(true)
     end)
@@ -403,6 +536,7 @@ function Addon.BuildUI()
         end)
         row:SetScript('OnEnter', function(self)
             if self.mob then
+                lastHoveredMonster = self.mob
                 self.remove:Show()
                 Addon.ShowDrops(self, self.mob)
             end
@@ -415,6 +549,10 @@ function Addon.BuildUI()
     trackerFrame.money = createText(trackerFrame, 12, 116, -311)
     trackerFrame.xpLabel = createText(trackerFrame, 11, 12, -335, 'XP gained')
     trackerFrame.xp = createText(trackerFrame, 12, 116, -334)
+    trackerFrame.rateLabel = createText(trackerFrame, 11, 12, -352, 'Kill XP / hour')
+    trackerFrame.rate = createText(trackerFrame, 12, 116, -352)
+    trackerFrame.toLevelLabel = createText(trackerFrame, 11, 12, -370, 'XP to level')
+    trackerFrame.toLevel = createText(trackerFrame, 12, 116, -370)
 
     -- Editable scale controls and shortcut hints
     trackerFrame.scaleLabel = createText(trackerFrame, 11, 12, -365, 'UI scale')
@@ -425,9 +563,7 @@ function Addon.BuildUI()
         setScale(Addon.db.scale + 0.05)
     end)
     trackerFrame.bestiary = button(trackerFrame, 'Bestiary', 60, 230, -360, function()
-        if Addon.BestiaryDemo then
-            Addon.BestiaryDemo()
-        end
+        Addon.OpenTrackedBestiary()
     end)
     local input = CreateFrame('EditBox', 'RaynnaTrackerScaleInput', trackerFrame, 'InputBoxTemplate')
     trackerFrame.scaleInput = input
@@ -507,8 +643,12 @@ function Addon.BuildUI()
     end)
     confirm:Hide()
     trackerFrame:SetScript('OnHide', function()
+        trackerFrame:SetScript('OnUpdate', nil)
         confirm:Hide()
         Addon.HideDrops()
+    end)
+    trackerFrame:SetScript('OnShow', function()
+        Addon.Draw()
     end)
     -- Independent-axis resizing tracks the cursor without scaling fonts or snapping dimensions.
     local function savePosition()
@@ -573,7 +713,7 @@ function Addon.BuildUI()
                 local x, y = GetCursorPosition()
                 local dx, dy = (x - startX) / effective, (y - startY) / effective
                 local newWidth = math.max(300, math.min(800, width + horizontal * dx))
-                local newHeight = math.max(304, math.min(900, height + vertical * dy))
+                local newHeight = math.max(340, math.min(900, height + vertical * dy))
                 local newLeft = horizontal == -1 and left + width - newWidth or left
                 local newTop = vertical == 1 and top - height + newHeight or top
                 trackerFrame:ClearAllPoints()
@@ -605,7 +745,7 @@ function Addon.BuildUI()
     mini:SetBackdropBorderColor(unpack(titleColor))
     local icon = mini:CreateTexture(nil, 'ARTWORK')
     icon:SetAllPoints()
-    icon:SetTexture('Interface\\Icons\\Ability_Hunter_SniperShot')
+    icon:SetTexture('Interface\\AddOns\\RaynnaTracker\\AddonIcon')
     local function positionMinimapButton()
         local a = math.rad(Addon.db.minimapAngle or 220)
         mini:ClearAllPoints()
@@ -674,6 +814,7 @@ function Addon.BuildUI()
             trackerFrame:Hide()
         elseif command == 'center' then
             Addon.db.position = nil
+            Addon.db.compactReturnPosition = nil
             trackerFrame:ClearAllPoints()
             trackerFrame:SetPoint('CENTER')
             Addon.db.hidden = false

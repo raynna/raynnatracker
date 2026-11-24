@@ -4,6 +4,7 @@ Build dependencies: cbor2, lupa. Input: installed QuestieDB 1.0.13 Forever TOC.
 See the bundled upstream licensing notice. Static corrections are baked into
 this TOC; relevant Horde/Alliance overlays are exported separately.
 """
+import argparse
 import base64
 import hashlib
 import json
@@ -15,6 +16,9 @@ from lupa.lua51 import LuaRuntime
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(r'C:\Program Files (x86)\World of Warcraft\_forever_\Interface\AddOns\QuestieDB')
+parser = argparse.ArgumentParser()
+parser.add_argument('--source', type=Path, default=SOURCE)
+SOURCE = parser.parse_args().source
 toc = (SOURCE / 'QuestieDB_Forever.toc').read_bytes()
 metadata = dict(re.findall(r'^## ([^:]+): (.*)$', toc.decode('utf8'), re.M))
 metadata = {key: value.rstrip('\r') for key, value in metadata.items()}
@@ -59,7 +63,7 @@ def lua(value):
 
 
 output = [
-    '-- Generated metadata snapshot from QuestieDB 1.0.13 (Forever).',
+    '-- Generated metadata snapshot from QuestieDB ' + metadata['Version'] + ' (Forever).',
     '-- Attribution and upstream terms: LICENSE-QuestieDB.txt; GPL-3.0.txt.',
     '-- Source TOC SHA-256: ' + hashlib.sha256(toc).hexdigest(),
     'local _, Addon = ...',

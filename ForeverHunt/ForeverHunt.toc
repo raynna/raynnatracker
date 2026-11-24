@@ -1,4 +1,5 @@
 ## Interface: 16001
+## IconTexture: Interface\AddOns\ForeverHunt\AddonIcon
 ## Title: Raynna's Tracker - Legacy data
 ## Notes: Loads existing ForeverHunt saves for automatic migration. Contains no tracker UI.
 ## Version: 1.15.0

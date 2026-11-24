@@ -97,6 +97,8 @@ lua.execute(r'''
 local bundledMetadata = A.ReferenceMetadata
 A.events.OnEvent(nil, 'ADDON_LOADED', 'RaynnaTracker')
 A.events.OnEvent(nil, 'PLAYER_LOGIN')
+-- Legacy shared UI coverage is explicit in this fixture, never initialized by Tracker.
+A.BuildBestiary()
 assert(SETTINGS_REGISTERED and SETTINGS_NAME == "Raynna's mods", 'native addon settings registered')
 SETTINGS_PANEL.OnShow()
 SlashCmdList.FOREVERHUNT('settings')
@@ -124,11 +126,11 @@ assert(row.drops['123'].count == 3, 'single pickup')
 A.Loot('You receive loot: ' .. GetLootSlotLink() .. '.')
 assert(row.drops['123'].count == 3, 'source quantities cannot be consumed twice')
 MONEY = 10500; A.Money(); MONEY = 10200; A.Money(); MONEY = 10300; A.Money()
-assert(A.db.money == 600, 'gross income ignores spending')
+assert(A.db.money == 0, 'wallet changes do not double count vendor sales')
 A.Reset('money'); assert(A.db.money == 0 and row.count == 1, 'independent money reset')
-MONEY = 10350; A.Money(); assert(A.db.money == 50, 'money baseline after reset')
+MONEY = 10350; A.Money(); assert(A.db.money == 0, 'wallet changes ignored after reset')
 A.Reset('kills'); A.Kill(guid, 'Forest Wolf')
-assert(next(A.db.mobs) == nil and A.db.money == 50, 'reset cannot recount dead corpse')
+assert(next(A.db.mobs) == nil and A.db.money == 0, 'reset cannot recount dead corpse')
 NOW = NOW + 1
 A.Kill('Creature-0-1-2-3-100-2', 'Forest Wolf')
 assert(A.LevelText(A.db.mobs[next(A.db.mobs)]) == '?', 'unknown level stays unknown')
@@ -150,7 +152,7 @@ ForeverHuntFrame.minus.OnClick(); assert(A.db.collapsed and A.db.scale == 1 and 
 ForeverHuntFrame.plus.OnClick(); assert(not A.db.collapsed and A.db.scale == 1 and ForeverHuntFrame.money.shown, 'plus restores contents')
 local confirm = ForeverHuntFrame.confirm
 findButton('Reset all').OnClick(); assert(confirm.shown)
-findButton('Cancel', confirm).OnClick(); assert(not confirm.shown and A.db.money == 50, 'cancel preserves money')
+findButton('Cancel', confirm).OnClick(); assert(not confirm.shown and A.db.money == 0, 'cancel preserves money')
 A.Reset('money')
 assert(not confirm.shown and A.db.money == 0 and next(A.db.mobs), 'money confirmation closes and only clears money')
 A.Reset('kills')
@@ -226,7 +228,7 @@ RaynnaTrackerDrops.OnUpdate(nil, 1); assert(RaynnaTrackerDrops.shown, 'can move 
 RaynnaTrackerDrops.hovered = false; RaynnaTrackerDrops.OnUpdate(nil, 1)
 assert(not RaynnaTrackerDrops.shown, 'popup closes on leaving')
 ForeverHuntFrame.minus.OnClick()
-assert(ForeverHuntFrame.width == 179 and ForeverHuntFrame.height == 72 and ForeverHuntFrame.plus.shown and not ForeverHuntFrame.minus.shown and not ForeverHuntFrame.close.shown and not ForeverHuntFrame.subtitle.shown, 'collapsed compact summary')
+assert(ForeverHuntFrame.width == 179 and ForeverHuntFrame.height == 108 and ForeverHuntFrame.plus.shown and not ForeverHuntFrame.minus.shown and not ForeverHuntFrame.close.shown and not ForeverHuntFrame.subtitle.shown, 'collapsed compact summary')
 ForeverHuntFrame.plus.OnClick(); assert(not ForeverHuntFrame.plus.shown and ForeverHuntFrame.minus.shown, 'expanded minus only')
 A.Reset('money'); A.Reset('xp'); A.Reset('kills')
 assert(A.demo.money == 0 and A.demo.xp == 0 and not next(A.demo.mobs), 'demo resets')
@@ -506,7 +508,7 @@ A.ShowDrops(CreateFrame(), {name='Bloodscalp Warrior',npcID=587,count=1,xp=1,mon
 assert(RaynnaTrackerDrops.portrait.width == 30 and RaynnaTrackerDrops.portrait.portraitKey, 'collected loot popup has cached monster portrait')
 print('PASS: standalone metadata, faction sources, vendors, quests and loot-popup portrait')
 local previousAddons = C_AddOns
-local installedVersion = '1.0.14'
+local installedVersion = '99.0.0'
 C_AddOns = {GetAddOnMetadata=function() return installedVersion end}
 LibQuestieDB = {Npc={Get=function(_, field)
     if field == 'name' then return 'New source name' end
@@ -748,3 +750,124 @@ assert(RaynnaBestiaryFrame.footer.labelText:find('Icy Veins'))
 assert(next(A.ReferenceMonster(99999998).drops) == nil)
 print('PASS: Forever fallback, reverse rates, quest conditions and accurate source labels')
 ''')
+
+# Loot value accounting: stacks, deferred prices, reset boundaries and sales.
+lua.execute(r"""
+A.demo = nil
+A.Reset('all')
+A.db.mobs.ValueTest = { name = 'ValueTest', count = 1, money = 73, drops = {} }
+local oldInfo = GetItemInfo
+local price
+GetItemInfo = function() return 'Test', nil, nil, nil, nil, nil, nil, nil, nil, nil, price end
+A.ValueLoot('ValueTest', 'item:123', 3)
+assert(#A.db.pendingLootValues == 1)
+price = 25
+A.ResolveLootValues()
+assert(A.TotalMoney(A.db.mobs.ValueTest) == 148, 'coins plus stack vendor value')
+assert(A.TotalMoney(A.db) == 75)
+A.ResolveLootValues(); assert(A.TotalMoney(A.db) == 75, 'price notification is idempotent')
+MONEY = MONEY + 75; A.Money(); assert(A.TotalMoney(A.db) == 75, 'sale never counted twice')
+price = nil; A.ValueLoot('ValueTest', 'item:124', 2)
+A.Reset('money'); price = 50; A.ResolveLootValues()
+assert(A.TotalMoney(A.db) == 0, 'delayed prices cannot undo money reset')
+assert(A.TotalMoney(A.db.mobs.ValueTest) == 248, 'monster history survives money reset')
+price = nil; A.ValueLoot('ValueTest', 'item:125', 2)
+A.Reset('kills'); price = 10; A.ResolveLootValues()
+assert(A.TotalMoney(A.db) == 20 and next(A.db.mobs) == nil, 'pending value survives kill reset without resurrecting row')
+price = 0; A.ValueLoot(nil, 'item:126', 1)
+assert(#A.db.pendingLootValues == 0 and A.TotalMoney(A.db) == 20, 'unsellable item resolves at zero')
+GetItemInfo = oldInfo
+""")
+print('PASS: coins plus vendor values, stacks, deferred prices, sale exclusion and independent resets')
+
+
+lua.execute(r"""
+A.Reset('all')
+A.db.lootValueBackfilled = nil
+A.db.money = 73
+A.db.lootValue = 25
+A.db.mobs.Panther = {name='Panther', count=5, money=73, lootValue=25, drops={
+    ['123']={link='item:123', count=3}, ['124']={link='item:124',count=1}}}
+A.db.pendingLootValues = {{key='Panther',link='item:123',count=1,total=true}}
+local ready = false
+GetItemInfo = function(link)
+    local price = link == 'item:123' and 25 or (ready and 75 or nil)
+    return 'Test',nil,nil,nil,nil,nil,nil,nil,nil,nil,price
+end
+A.BackfillLootValues(); A.BackfillLootValues()
+assert(#A.db.pendingLootValues == 2, 'backfill queued exactly once')
+A.ResolveLootValues()
+assert(A.db.lootValue == 50, 'normal pending receipt resolves independently')
+A.db.mobs = A.MergeMobs(A.db.mobs)
+ready = true; A.BackfillLootValues(); A.ResolveLootValues()
+assert(A.TotalMoney(A.db) == 223 and A.TotalMoney(A.db.mobs.Panther) == 223, 'old drops backfilled minus already credited value and pending receipts')
+A.BackfillLootValues(); A.ResolveLootValues()
+assert(A.TotalMoney(A.db) == 223, 'backfill does not repeat after reload')
+A.Reset('money'); A.BackfillLootValues(); A.ResolveLootValues()
+assert(A.TotalMoney(A.db) == 0, 'money reset stays reset after migration')
+GetItemInfo = nil
+""")
+print('PASS: saved-drop backfill, mixed previously valued and pending loot, reload and reset idempotency')
+
+lua.execute(r"""
+local frame = ForeverHuntFrame
+local oldLeft, oldTop = frame.GetLeft, frame.GetTop
+A.db.collapsed = true
+frame.GetLeft = function() return 900 end
+frame.GetTop = function() return 80 end
+A.SetCollapsed(false)
+assert(A.db.compactReturnPosition.x == 900 and A.db.compactReturnPosition.y == 80)
+-- Simulate the client's upward clamp of the expanded window.
+frame.GetTop = function() return 440 end
+A.SetCollapsed(true)
+assert(frame.pointArgs[3] == 900 and frame.pointArgs[4] == 80, 'minimize restores pre-expansion position')
+frame.GetTop = function() return 120 end
+A.SetCollapsed(false)
+frame.GetTop = function() return 480 end
+A.SetCollapsed(true)
+assert(frame.pointArgs[4] == 120, 'moving compact frame updates next return position')
+frame.GetLeft, frame.GetTop = oldLeft, oldTop
+""")
+print('PASS: compact position restored after expanded screen clamp and subsequent moves')
+
+lua.execute(r'''
+A.demo=nil;A.db.hideXPRate=nil;A.db.hideXPToLevel=nil;A.db.includeQuestXP=true
+A.SetCollapsed(false);A.Reset('xp');NOW=1000
+XP=100;XPMAX=1000;PLAYERLEVEL=20;A.Reset('xp')
+assert(select(2,A.XPRate())=='Waiting for kills')
+A.QuestTurnedIn(999,5000);XP=200;A.XP()
+assert(select(2,A.XPRate())=='Waiting for kills','quest/general XP cannot start kill rate')
+A.MonsterXP('Test monster dies, you gain 100 experience.')
+assert(A.XPRate()==360000,'first kill gives a finite immediate estimate')
+NOW=1001;assert(A.XPRate()==360000,'one-second minimum denominator')
+NOW=1010;assert(A.XPRate()==36000,'provisional rate settles as elapsed time grows')
+NOW=1060;A.MonsterXP('Test monster dies, you gain 200 experience.')
+assert(A.XPRate()==18000,'300 monster XP in one minute')
+A.QuestTurnedIn(998,9000);XP=300;A.XP()
+assert(A.XPRate()==18000,'quest XP and overall XP updates do not affect monster rate')
+A.db.includeQuestXP=false;assert(A.XPRate()==18000,'quest inclusion checkbox does not affect rate')
+assert(A.XPToLevel()==700,'remaining XP uses actual character progress')
+NOW=1360;A.UpdateXPDetails()
+assert(select(2,A.XPRate())=='Paused' and not rawget(ForeverHuntFrame,'OnUpdate'),'idle session pauses and stops update work')
+A.QuestTurnedIn(997,1000);assert(select(2,A.XPRate())=='Paused','quest reward does not resume kill session')
+NOW=2000;A.MonsterXP('Test monster dies, you gain 50 experience.')
+assert(A.XPRate()==180000,'first kill after idle gives a fresh immediate estimate')
+NOW=2060;assert(A.XPRate()==3000,'old kills and idle gap excluded')
+A.SetCollapsed(true)
+assert(ForeverHuntFrame.compactRate.shown and ForeverHuntFrame.compactLevelTime.shown and ForeverHuntFrame.height==108,'enabled stats visible while minimized')
+assert(ForeverHuntFrame.compactLevelTime.labelText=='Time to level: ~14m','ETA uses remaining XP and monster rate')
+assert(rawget(ForeverHuntFrame,'OnUpdate'),'minimized statistics update live')
+A.db.hideXPRate=true;A.Draw()
+assert(not ForeverHuntFrame.compactRate.shown and ForeverHuntFrame.compactLevelTime.shown and ForeverHuntFrame.height==90,'ETA stays available independently of rate visibility')
+A.db.hideXPToLevel=true;A.Draw()
+assert(ForeverHuntFrame.height==72 and not ForeverHuntFrame.compactLevelTime.shown and not rawget(ForeverHuntFrame,'OnUpdate'),'hidden compact rows reclaim space and stop ticker')
+A.SetCollapsed(false)
+A.db.hideXPRate=true;A.db.hideXPToLevel=true;A.Draw()
+assert(not ForeverHuntFrame.rate.shown and not ForeverHuntFrame.toLevel.shown and not rawget(ForeverHuntFrame,'OnUpdate'),'hide settings reclaim rows and stop rate ticker')
+A.db.hideXPRate=false;A.db.hideXPToLevel=false;A.Draw()
+assert(ForeverHuntFrame.rate.shown and ForeverHuntFrame.toLevel.shown,'settings restore both statistics')
+PLAYERLEVEL=60;assert(select(2,A.XPToLevel())=='Max level','level cap handled')
+PLAYERLEVEL=20;XP=25;XPMAX=1200;assert(A.XPToLevel()==1175,'level-up remaining XP')
+A.Reset('all');assert(select(2,A.XPRate())=='Waiting for kills','Reset all clears rate session')
+''')
+print('PASS: monster-only XP/hour, quest exclusion, idle restart, warm-up, hidden ticker, level progress and reset')

@@ -40,10 +40,10 @@ local function refreshPopup()
             .. Addon.Number(selectedMonster.xp)
             .. ' XP'
     )
-    local amount = selectedMonster.money or 0
+    local amount = Addon.TotalMoney(selectedMonster)
     local formatter = C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString or GetCoinTextureString
     lootPopup.money:SetText(
-        'Coins: '
+        'Loot value: '
             .. (
                 formatter and formatter(amount)
                 or string.format(

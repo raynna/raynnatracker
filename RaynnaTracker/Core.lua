@@ -3,10 +3,64 @@
 
 local _, Addon = ...
 local observedCreatures, pendingKills, countedKills, lootSources = {}, {}, {}, {}
-local moneyBaseline, isInitialized
+local isInitialized
 local xpBaseline, xpMaximum, xpLevel, xpUpdateQueued
 local pendingCoinSource
 local unmatchedKillXP = {}
+local xpRate
+local XP_IDLE_SECONDS = 300
+
+function Addon.ResetXPRate()
+    xpRate = nil
+end
+
+local function recordRateXP(gained)
+    if gained <= 0 then
+        return
+    end
+    local now = GetTime()
+    if not xpRate or now - xpRate.last >= XP_IDLE_SECONDS then
+        xpRate = {
+            started = now,
+            last = now,
+            total = 0,
+        }
+    end
+    xpRate.total = xpRate.total + gained
+    xpRate.last = now
+end
+
+function Addon.XPRate()
+    if Addon.demo then
+        return nil, 'Preview', false
+    end
+    if not xpRate then
+        return nil, 'Waiting for kills', false
+    end
+    local now = GetTime()
+    if now - xpRate.last >= XP_IDLE_SECONDS then
+        return nil, 'Paused', false
+    end
+    -- Show the provisional rate immediately; one second prevents division by zero.
+    local elapsed = math.max(1, now - xpRate.started)
+    return math.floor(xpRate.total * 3600 / elapsed + 0.5), nil, true
+end
+
+function Addon.XPToLevel()
+    local current, maximum, level = UnitXP('player'), UnitXPMax('player'), UnitLevel('player')
+    for _, value in ipairs({ current, maximum, level }) do
+        if (issecretvalue and issecretvalue(value)) or type(value) ~= 'number' then
+            return nil, 'Unavailable'
+        end
+    end
+    if not current or not maximum or not level then
+        return nil, 'Unavailable'
+    end
+    if maximum <= 0 or level >= 60 then
+        return nil, 'Max level'
+    end
+    return math.max(0, maximum - current)
+end
 
 -- Value guards and monster identity
 local function isReadableValue(value)
@@ -45,6 +99,7 @@ function Addon.MergeMobs(mobs)
         row.count = row.count + old.count
         row.lastKillOrder = math.max(row.lastKillOrder or 0, old.lastKillOrder or 0)
         row.money = row.money + (old.money or 0)
+        row.lootValue = (row.lootValue or 0) + (old.lootValue or 0)
         row.xp = row.xp + (old.xp or 0)
         includeLevel(row, old.minLevel or old.level)
         includeLevel(row, old.maxLevel or old.level)
@@ -210,11 +265,7 @@ local function makeMessagePattern(format)
     return '^' .. messagePattern .. '$'
 end
 function Addon.MonsterMoney(message)
-    if not isReadableValue(message) or type(message) ~= 'string' or not pendingCoinSource then
-        return
-    end
-    local age = GetTime() - (pendingCoinSource.closed or pendingCoinSource.time)
-    if age > (pendingCoinSource.closed and 3 or 120) or pendingCoinSource.used then
+    if not isReadableValue(message) or type(message) ~= 'string' then
         return
     end
     local amountText
@@ -245,11 +296,16 @@ function Addon.MonsterMoney(message)
     if amount <= 0 then
         return
     end
-    local row = Addon.db.mobs[pendingCoinSource.key]
-    if row then
-        row.money = (row.money or 0) + amount
+    Addon.db.money = Addon.db.money + amount
+    local source = pendingCoinSource
+    if source then
+        local age = GetTime() - (source.closed or source.time)
+        local row = Addon.db.mobs[source.key]
+        if row and not source.used and age <= (source.closed and 3 or 120) then
+            row.money = (row.money or 0) + amount
+            source.used = true
+        end
     end
-    pendingCoinSource.used = true
     Addon.Refresh()
 end
 -- Named XP chat messages identify the actual recipient monster; quest and
@@ -280,6 +336,7 @@ function Addon.MonsterXP(message)
             local name, amount = message:match(makeMessagePattern(format))
             amount = tonumber(amount)
             if name and amount then
+                recordRateXP(amount)
                 local row = Addon.db.mobs[name]
                 if row then
                     row.xp = (row.xp or 0) + amount
@@ -314,6 +371,7 @@ function Addon.Loot(message)
     local id = link:match('item:(%d+)')
     local entries = id and lootSources[id]
     if not entries then
+        Addon.ValueLoot(nil, link, amount)
         return
     end
     for _, entry in ipairs(entries) do
@@ -327,6 +385,7 @@ function Addon.Loot(message)
                 local drop = row.drops[id] or { link = entry.link, count = 0 }
                 row.drops[id] = drop
                 drop.count = drop.count + n
+                Addon.ValueLoot(entry.key, link, n)
                 entry.quantity = entry.quantity - n
                 amount = amount - n
             end
@@ -351,19 +410,95 @@ function Addon.QuestTurnedIn(questID, xpReward)
     Addon.Refresh()
 end
 
--- Overall income, XP and independent resets
-function Addon.Money()
-    local current = GetMoney()
-    if not isReadableValue(current) then
+-- Vendor values are credited once on receipt, never on selling the item.
+-- Uncached prices survive reload and are retried when item data arrives.
+function Addon.TotalMoney(data)
+    return (data.money or 0) + (data.lootValue or 0)
+end
+-- Old releases stored drop counts but not their vendor value. Queue a single
+-- reconciliation per monster, excluding receipts already waiting for a price.
+-- The persisted marker and queue make this safe across reloads and resets.
+function Addon.BackfillLootValues()
+    if Addon.db.lootValueBackfilled then
         return
     end
-    if moneyBaseline and current > moneyBaseline then
-        local gained = current - moneyBaseline
-        Addon.db.money = Addon.db.money + gained
+    local pending = Addon.db.pendingLootValues or {}
+    Addon.db.pendingLootValues = pending
+    local queued = {}
+    for _, entry in ipairs(pending) do
+        local id = entry.link and entry.link:match('item:(%d+)')
+        if entry.key and id then
+            queued[entry.key] = queued[entry.key] or {}
+            queued[entry.key][id] = (queued[entry.key][id] or 0) + entry.count
+        end
     end
-    moneyBaseline = current
+    for key, row in pairs(Addon.db.mobs) do
+        local items = {}
+        for id, drop in pairs(row.drops) do
+            local count = drop.count - (queued[key] and queued[key][tostring(id)] or 0)
+            if count > 0 then
+                table.insert(items, { link = drop.link or ('item:' .. id), count = count })
+            end
+        end
+        if #items > 0 then
+            table.insert(pending, {
+                key = key,
+                items = items,
+                previous = row.lootValue or 0,
+                total = true,
+            })
+        end
+    end
+    Addon.db.lootValueBackfilled = true
+end
+local function pendingValue(entry, getInfo)
+    if entry.items then
+        local total = 0
+        for _, item in ipairs(entry.items) do
+            local price = select(11, getInfo(item.link))
+            if not isReadableValue(price) or type(price) ~= 'number' then
+                return
+            end
+            total = total + math.max(0, price) * item.count
+        end
+        return math.max(0, total - entry.previous)
+    end
+    local price = select(11, getInfo(entry.link))
+    if isReadableValue(price) and type(price) == 'number' then
+        return math.max(0, price) * entry.count
+    end
+end
+function Addon.ResolveLootValues()
+    local pending = Addon.db.pendingLootValues or {}
+    local getInfo = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+    if not getInfo then
+        return
+    end
+    for index = #pending, 1, -1 do
+        local entry = pending[index]
+        local value = pendingValue(entry, getInfo)
+        if value then
+            local row = entry.key and Addon.db.mobs[entry.key]
+            if row then
+                row.lootValue = (row.lootValue or 0) + value
+            end
+            if entry.total then
+                Addon.db.lootValue = (Addon.db.lootValue or 0) + value
+            end
+            table.remove(pending, index)
+        end
+    end
     Addon.Refresh()
 end
+function Addon.ValueLoot(key, link, count)
+    Addon.db.pendingLootValues = Addon.db.pendingLootValues or {}
+    table.insert(Addon.db.pendingLootValues, { key = key, link = link, count = count, total = true })
+    Addon.ResolveLootValues()
+end
+-- Wallet changes include selling, trading and spending, so they cannot measure loot.
+function Addon.Money() end
+
+-- Overall income, XP and independent resets
 function Addon.Reset(kind)
     if kind == 'all' then
         Addon.Reset('money')
@@ -372,12 +507,16 @@ function Addon.Reset(kind)
         local data = Addon.demo or Addon.db
         data.quests = { count = 0, xp = 0, unknownXP = 0 }
         data.questXPBaseline = 0
+        if not Addon.demo then
+            Addon.db.pendingLootValues = {}
+        end
         Addon.Refresh()
         return
     end
     if Addon.demo then
         if kind == 'money' then
             Addon.demo.money = 0
+            Addon.demo.lootValue = 0
         elseif kind == 'xp' then
             Addon.demo.xp = 0
             Addon.demo.questXPBaseline = Addon.demo.quests and Addon.demo.quests.xp or 0
@@ -389,12 +528,19 @@ function Addon.Reset(kind)
     end
     if kind == 'money' then
         Addon.db.money = 0
-        moneyBaseline = GetMoney()
+        Addon.db.lootValue = 0
+        for _, entry in ipairs(Addon.db.pendingLootValues or {}) do
+            entry.total = false
+        end
     elseif kind == 'xp' then
+        Addon.ResetXPRate()
         Addon.db.xp = 0
         Addon.db.questXPBaseline = Addon.db.quests and Addon.db.quests.xp or 0
         xpBaseline, xpMaximum, xpLevel = UnitXP('player'), UnitXPMax('player'), UnitLevel('player')
     else
+        for _, entry in ipairs(Addon.db.pendingLootValues or {}) do
+            entry.key = nil
+        end
         Addon.db.mobs = {}
         lootSources = {}
         pendingKills = {}
@@ -408,6 +554,13 @@ function Addon.RemoveTrackerEntry(data, entry)
     for key, mob in pairs(data.mobs) do
         if mob == entry then
             data.mobs[key] = nil
+            if data == Addon.db then
+                for _, pending in ipairs(data.pendingLootValues or {}) do
+                    if pending.key == key then
+                        pending.key = nil
+                    end
+                end
+            end
             break
         end
     end
@@ -431,7 +584,8 @@ function Addon.XP()
         if level > xpLevel then
             gained = gained + xpMaximum
         end
-        Addon.db.xp = Addon.db.xp + math.max(0, gained)
+        gained = math.max(0, gained)
+        Addon.db.xp = Addon.db.xp + gained
     end
     xpBaseline, xpMaximum, xpLevel = current, maximum, level
     Addon.Refresh()
@@ -478,11 +632,13 @@ eventFrame:SetScript('OnEvent', function(_, event, ...)
         return
     end
     if event == 'PLAYER_LOGIN' then
-        moneyBaseline = GetMoney()
+        Addon.BackfillLootValues()
+        Addon.ResolveLootValues()
         xpBaseline, xpMaximum, xpLevel = UnitXP('player'), UnitXPMax('player'), UnitLevel('player')
         isInitialized = true
         for _, e in ipairs({
             'CHAT_MSG_MONEY',
+            'GET_ITEM_INFO_RECEIVED',
             'CHAT_MSG_COMBAT_XP_GAIN',
             'QUEST_TURNED_IN',
             'PLAYER_XP_UPDATE',
@@ -507,13 +663,6 @@ eventFrame:SetScript('OnEvent', function(_, event, ...)
         Addon.Observe('target')
         Addon.PreloadTrackerPortraits()
         Addon.BuildUI()
-        if RaynnaBestiaryAPI then
-            Addon.BestiaryDemo = function()
-                RaynnaBestiaryAPI.BestiaryDemo()
-            end
-        elseif Addon.BuildBestiary then
-            Addon.BuildBestiary()
-        end
         if Addon.BuildSettings then
             Addon.BuildSettings()
         end
@@ -550,7 +699,9 @@ eventFrame:SetScript('OnEvent', function(_, event, ...)
     if not isInitialized then
         return
     end
-    if event == 'PLAYER_MONEY' then
+    if event == 'GET_ITEM_INFO_RECEIVED' then
+        Addon.ResolveLootValues()
+    elseif event == 'PLAYER_MONEY' then
         Addon.Money()
     elseif event == 'CHAT_MSG_MONEY' then
         Addon.MonsterMoney(...)
